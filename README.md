@@ -281,3 +281,27 @@ Check logs with `docker compose logs`. The most common cause is a missing `/data
 
 **"A sort job is already running" after a crash**
 The previous job's thread is gone but the API thinks it's still running. Restart the container: `docker compose restart`. The crashed album will be marked **Interrupted** on the next scan.
+
+## Authentication and deployment security
+
+The web interface and API are protected by OpenID Connect (OIDC). Pocket ID is supported, as are other OIDC providers.
+
+Configure these environment variables before starting the container:
+
+| Variable | Purpose |
+| --- | --- |
+| `OIDC_ISSUER_URL` | Provider issuer URL; discovery is loaded from its `/.well-known/openid-configuration` endpoint |
+| `OIDC_CLIENT_ID` | OIDC client ID |
+| `OIDC_CLIENT_SECRET` | OIDC client secret |
+| `OIDC_REDIRECT_URI` | Exact callback URL registered with the provider, ending in `/api/auth/callback` |
+| `SESSION_SECRET` | Long random secret used to sign the session cookie |
+| `OIDC_ALLOWED_EMAILS` | Optional comma-separated email allowlist; empty allows any account accepted by the provider |
+| `SESSION_COOKIE_SECURE` | Keep `true` over HTTPS; set `false` only for isolated local HTTP testing |
+
+Generate a session secret with `openssl rand -hex 32`. Register the callback URL exactly as configured in `OIDC_REDIRECT_URI`. Do not commit client secrets, API keys, or session secrets.
+
+Authentication fails closed when OIDC configuration is missing. `AUTH_DISABLED=true` is intended only for isolated local development and must not be used on a network-accessible deployment. Use HTTPS and keep the application behind an appropriate access-control layer.
+
+The settings API never returns the Immich API key. Leaving the API-key field blank preserves the existing key. Immich URLs must be absolute HTTP(S) URLs without embedded credentials or query strings, and Immich requests do not follow redirects, preventing the API key from being forwarded to a different host.
+
+The application continues to store its SQLite database at `/data/sequencer.db`. Keep the existing `/data` volume when upgrading.
