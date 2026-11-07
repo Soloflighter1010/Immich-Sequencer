@@ -192,7 +192,7 @@ class JobManager:
         cancelled = self._cancel.is_set()
         finish_sort_log(
             log_id,
-            status="cancelled" if cancelled else "completed",
+            status="cancelled" if cancelled else ("failed" if failed_n else "completed"),
             sorted_n=sorted_n,
             failed_n=failed_n,
             skipped_n=skipped_n,
