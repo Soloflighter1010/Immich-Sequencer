@@ -57,7 +57,9 @@ def get_album_assets(
     """Paginate through POST /api/search/metadata to collect all assets."""
     assets: list[dict] = []
     page = 1
-    while True:
+    seen_pages: set[int] = set()
+    while page not in seen_pages:
+        seen_pages.add(page)
         r = session.post(
             f"{base_url}/api/search/metadata",
             json={"albumIds": [album_id], "page": page, "size": SEARCH_PAGE_SIZE},
@@ -72,9 +74,12 @@ def get_album_assets(
         if not next_page:
             break
         try:
-            page = int(next_page)
+            next_page_number = int(next_page)
         except (ValueError, TypeError):
             break
+        if next_page_number <= page or next_page_number in seen_pages:
+            break
+        page = next_page_number
     return assets
 
 
