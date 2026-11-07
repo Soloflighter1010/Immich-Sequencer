@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Immich Sequencer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: { DEFAULT: '#1e293b', raised: '#273549', border: '#334155' },
+          },
+          animation: { 'spin-slow': 'spin 2s linear infinite' },
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    .progress-bar { transition: width 0.3s ease; }
+  </style>
+</head>
+
+<body class="bg-slate-900 text-slate-100 h-full min-h-screen" x-data="app()" x-init="init()" x-cloak>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- HEADER                                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<header class="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-surface-border">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
+    <!-- Logo -->
+    <div class="flex items-center gap-2 flex-shrink-0">
+      <span class="text-2xl">🗂</span>
+      <span class="font-bold text-lg tracking-tight">Immich Sequencer</span>
+    </div>
+
+    <!-- Connection pill -->
+    <div class="flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border"
+         :class="connected
+           ? 'bg-green-500/10 border-green-500/30 text-green-400'
+           : 'bg-red-500/10 border-red-500/30 text-red-400'">
+      <span class="w-1.5 h-1.5 rounded-full"
+            :class="connected ? 'bg-green-400' : 'bg-red-400'"></span>
+      <span x-text="connected ? 'Connected' : 'Disconnected'"></span>
+    </div>
+
+    <div class="flex-1"></div>
+
+    <!-- Actions -->
+    <button @click="scan()"
+            :disabled="scanning || running"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+                   bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed
+                   border border-surface-border transition-colors">
+      <span :class="scanning ? 'animate-spin-slow inline-block' : ''">↻</span>
+      <span x-text="scanning ? 'Scanning…' : 'Scan'"></span>
+    </button>
+
+    <button @click="openSettings()"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+                   bg-slate-700 hover:bg-slate-600 border border-surface-border transition-colors">
+      ⚙ Settings
+    </button>
+  </div>
+</header>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- MAIN CONTENT                                                            -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<main class="max-w-7xl mx-auto px-4 py-6 pb-48">
+
+  <!-- Status cards -->
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+    <template x-for="card in statusCards" :key="card.key">
+      <button @click="setFilter(card.key)"
+              :class="[
+                'rounded-xl border p-3 text-left transition-all',
+                statusFilter === card.key
+                  ? 'ring-2 ring-indigo-500 border-indigo-500/50 bg-indigo-500/10'
+                  : 'border-surface-border bg-surface hover:bg-surface-raised'
+              ]">
+        <div class="text-2xl font-bold" x-text="counts[card.key] ?? 0"></div>
+        <div class="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+          <span x-text="card.icon"></span>
+          <span x-text="card.label"></span>
+        </div>
+      </button>
+    </template>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="flex flex-wrap gap-3 mb-4 items-center">
+    <!-- Search -->
+    <div class="relative flex-1 min-w-48">
+      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔍</span>
+      <input type="text" placeholder="Search albums…"
+             x-model.debounce.300ms="searchQuery"
+             @input="loadAlbums()"
+             class="w-full bg-surface border border-surface-border rounded-lg pl-8 pr-3 py-2
+                    text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+    </div>
+
+    <!-- Bulk sort buttons -->
+    <button @click="sortByStatus(['unsorted'])"
+            :disabled="running || counts.unsorted === 0"
+            class="px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                   bg-blue-600/20 border-blue-500/40 text-blue-300
+                   hover:bg-blue-600/30 disabled:opacity-30 disabled:cursor-not-allowed">
+      ▶ Sort New
+      <span class="ml-1 text-xs opacity-70" x-text="`(${counts.unsorted ?? 0})`"></span>
+    </button>
+
+    <button @click="sortByStatus(['updated'])"
+            :disabled="running || counts.updated === 0"
+            class="px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                   bg-orange-600/20 border-orange-500/40 text-orange-300
+                   hover:bg-orange-600/30 disabled:opacity-30 disabled:cursor-not-allowed">
+      ▶ Sort Updated
+      <span class="ml-1 text-xs opacity-70" x-text="`(${counts.updated ?? 0})`"></span>
+    </button>
+
+    <button @click="sortByStatus(['unsorted','updated','interrupted'])"
+            :disabled="running || (counts.unsorted + counts.updated + counts.interrupted) === 0"
+            class="px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                   bg-indigo-600/20 border-indigo-500/40 text-indigo-300
+                   hover:bg-indigo-600/30 disabled:opacity-30 disabled:cursor-not-allowed">
+      ▶ Sort All Pending
+    </button>
+
+    <!-- Selected sort -->
+    <button x-show="selected.size > 0"
+            @click="sortSelected()"
+            :disabled="running"
+            class="px-3 py-2 rounded-lg text-sm font-medium border transition-colors
+                   bg-emerald-600/20 border-emerald-500/40 text-emerald-300
+                   hover:bg-emerald-600/30 disabled:opacity-30 disabled:cursor-not-allowed">
+      ▶ Sort Selected
+      <span class="ml-1 text-xs opacity-70" x-text="`(${selected.size})`"></span>
+    </button>
+  </div>
+
+  <!-- Album table -->
+  <div class="rounded-xl border border-surface-border overflow-hidden">
+
+    <!-- Table header -->
+    <div class="bg-surface-raised px-4 py-2.5 grid grid-cols-[auto_1fr_auto_auto_auto_auto]
+                gap-4 text-xs font-medium text-slate-400 uppercase tracking-wider">
+      <div class="flex items-center">
+        <input type="checkbox"
+               class="rounded border-surface-border bg-surface-raised"
+               @change="toggleAll($event.target.checked)"
+               :checked="selected.size === albums.length && albums.length > 0" />
+      </div>
+      <div>Album</div>
+      <div class="text-right">Assets</div>
+      <div class="text-right hidden sm:block">Last Sorted</div>
+      <div class="text-center">Status</div>
+      <div></div>
+    </div>
+
+    <!-- Empty state -->
+    <div x-show="albums.length === 0 && !scanning"
+         class="py-16 text-center text-slate-500">
+      <div class="text-4xl mb-3">📭</div>
+      <div class="font-medium">No albums found</div>
+      <div class="text-sm mt-1">
+        <span x-show="statusFilter !== 'all'">
+          No albums with status "<span x-text="statusFilter"></span>".
+          <button @click="setFilter('all')" class="underline text-slate-400 hover:text-slate-300">Show all</button>
+          or
+        </span>
+        <button @click="scan()" class="underline text-slate-400 hover:text-slate-300">run a scan</button>
+        to import your albums.
+      </div>
+    </div>
+
+    <!-- Scanning placeholder -->
+    <div x-show="scanning && albums.length === 0" class="py-16 text-center text-slate-500">
+      <div class="text-4xl mb-3 animate-spin-slow inline-block">↻</div>
+      <div class="mt-2 font-medium">Scanning Immich…</div>
+    </div>
+
+    <!-- Rows -->
+    <template x-for="album in albums" :key="album.id">
+      <div class="px-4 py-3 grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-4 items-center
+                  border-t border-surface-border hover:bg-surface-raised/50 transition-colors"
+           :class="currentAlbumId === album.id && running ? 'bg-indigo-500/5' : ''">
+
+        <!-- Checkbox -->
+        <input type="checkbox"
+               class="rounded border-slate-600 bg-slate-800"
+               :checked="selected.has(album.id)"
+               @change="toggleSelect(album.id, $event.target.checked)" />
+
+        <!-- Name + mode -->
+        <div class="min-w-0">
+          <div class="font-medium text-sm truncate" x-text="album.name"></div>
+          <div x-show="album.mode && album.status === 'sorted'"
+               class="text-xs text-slate-500 mt-0.5"
+               x-text="modeLabel(album.mode, album.interval_s)"></div>
+          <div x-show="album.error_message && album.status === 'error'"
+               class="text-xs text-red-400 mt-0.5 truncate"
+               x-text="album.error_message"></div>
+          <!-- Asset-level progress bar (only shown for the actively sorting album) -->
+          <div x-show="currentAlbumId === album.id && running && albumTotal > 0" class="mt-1.5">
+            <div class="flex items-center gap-2 text-xs text-slate-400">
+              <div class="flex-1 bg-slate-700 rounded-full h-1">
+                <div class="bg-indigo-500 h-1 rounded-full progress-bar"
+                     :style="`width:${albumTotal ? (albumProgress/albumTotal*100) : 0}%`"></div>
+              </div>
+              <span x-text="`${albumProgress}/${albumTotal}`"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Asset count -->
+        <div class="text-sm text-slate-300 text-right tabular-nums"
+             x-text="album.asset_count.toLocaleString()"></div>
+
+        <!-- Last sorted -->
+        <div class="text-sm text-slate-500 text-right hidden sm:block whitespace-nowrap"
+             x-text="album.last_sorted_at ? formatDate(album.last_sorted_at) : '—'"></div>
+
+        <!-- Status badge -->
+        <div>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border"
+                :class="badge(album.status).cls">
+            <span x-text="badge(album.status).icon"></span>
+            <span x-text="badge(album.status).label"></span>
+          </span>
+        </div>
+
+        <!-- Sort button -->
+        <div>
+          <button @click="sortOne(album.id)"
+                  :disabled="running || album.status === 'empty'"
+                  title="Sort this album"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-surface-raised
+                         disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-sm">
+            ▶
+          </button>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- Result count -->
+  <div class="mt-3 text-xs text-slate-500 text-right"
+       x-text="`Showing ${albums.length} album${albums.length !== 1 ? 's' : ''}${statusFilter !== 'all' ? ` · ${statusFilter}` : ''}`">
+  </div>
+</main>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- PROGRESS PANEL (fixed bottom, slides in when sorting)                   -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div x-show="running"
+     x-transition:enter="transition ease-out duration-300"
+     x-transition:enter-start="translate-y-full opacity-0"
+     x-transition:enter-end="translate-y-0 opacity-100"
+     x-transition:leave="transition ease-in duration-200"
+     x-transition:leave-start="translate-y-0 opacity-100"
+     x-transition:leave-end="translate-y-full opacity-0"
+     class="fixed bottom-0 left-0 right-0 z-50 bg-slate-800 border-t border-surface-border shadow-2xl">
+  <div class="max-w-7xl mx-auto px-4 py-4">
+
+    <div class="flex items-start justify-between gap-4 mb-3">
+      <div class="min-w-0">
+        <div class="text-sm font-medium text-slate-200 truncate"
+             x-text="currentAlbumName || 'Preparing…'"></div>
+        <div class="text-xs text-slate-400 mt-0.5"
+             x-text="batchTotal > 0 ? `Album ${batchProgress} of ${batchTotal}` : ''"></div>
+      </div>
+      <button @click="cancel()"
+              class="flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium
+                     bg-red-600/20 border border-red-500/40 text-red-400
+                     hover:bg-red-600/30 transition-colors">
+        ✕ Cancel
+      </button>
+    </div>
+
+    <!-- Album-level progress -->
+    <div class="mb-2" x-show="albumTotal > 0">
+      <div class="flex justify-between text-xs text-slate-400 mb-1">
+        <span>Album</span>
+        <span x-text="albumTotal > 0 ? `${albumProgress} / ${albumTotal} assets  ·  ${albumPct}%` : ''"></span>
+      </div>
+      <div class="bg-slate-700 rounded-full h-2">
+        <div class="bg-indigo-500 h-2 rounded-full progress-bar"
+             :style="`width:${albumPct}%`"></div>
+      </div>
+    </div>
+
+    <!-- Batch-level progress -->
+    <div x-show="batchTotal > 0">
+      <div class="flex justify-between text-xs text-slate-400 mb-1">
+        <span>Overall</span>
+        <span x-text="batchTotal > 0 ? `${batchProgress} / ${batchTotal} albums  ·  ${batchPct}%  ·  ETA ${batchEta}` : ''"></span>
+      </div>
+      <div class="bg-slate-700 rounded-full h-1.5">
+        <div class="bg-emerald-500 h-1.5 rounded-full progress-bar"
+             :style="`width:${batchPct}%`"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- SETTINGS MODAL                                                          -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div x-show="showSettings"
+     x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     @keydown.escape.window="showSettings = false"
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+  <div @click.outside="showSettings = false"
+       class="bg-slate-800 border border-surface-border rounded-2xl w-full max-w-lg shadow-2xl">
+
+    <div class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-surface-border">
+      <h2 class="font-semibold text-lg">Settings</h2>
+      <button @click="showSettings = false" class="text-slate-400 hover:text-slate-200 text-xl leading-none">✕</button>
+    </div>
+
+    <div class="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Immich URL</label>
+        <input type="url" x-model="settings.immich_url"
+               class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                      text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono" />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">
+          API Key
+          <span x-show="settings.api_key_set" class="text-xs text-slate-500 font-normal ml-1">(set — enter new value to change)</span>
+        </label>
+        <input type="password"
+               x-model="settings.api_key_new"
+               :placeholder="settings.api_key_set ? '••••••••' : 'Enter API key'"
+               class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                      text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono" />
+        <p class="text-xs text-slate-500 mt-1">Required scopes: user.read · album.read · asset.read · asset.update</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Min Year</label>
+          <input type="number" x-model="settings.min_year" min="1970" max="2030"
+                 class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                        text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <p class="text-xs text-slate-500 mt-1">Timestamps before this year are treated as outliers</p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">HTTP Method</label>
+          <select x-model="settings.http_method"
+                  class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                         text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="PUT">PUT (Immich v3)</option>
+            <option value="PATCH">PATCH (Immich v4+)</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Base Time Override</label>
+        <input type="text" x-model="settings.base_time_override"
+               placeholder="Leave empty for auto (recommended)"
+               class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                      text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono" />
+        <p class="text-xs text-slate-500 mt-1">ISO 8601 e.g. 2020-01-01T00:00:00+00:00 — overrides auto range detection</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Request Delay (s)</label>
+          <input type="number" x-model="settings.request_delay" min="0" max="5" step="0.01"
+                 class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                        text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <p class="text-xs text-slate-500 mt-1">Between asset updates</p>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Album Delay (s)</label>
+          <input type="number" x-model="settings.album_delay" min="0" max="60" step="0.5"
+                 class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                        text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <p class="text-xs text-slate-500 mt-1">Between albums</p>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Max Retries</label>
+        <input type="number" x-model="settings.max_retries" min="1" max="10"
+               class="w-full bg-slate-900 border border-surface-border rounded-lg px-3 py-2
+                      text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      </div>
+
+      <!-- Connection test result -->
+      <div x-show="connTestResult !== null"
+           class="rounded-lg px-3 py-2 text-sm border"
+           :class="connTestResult ? 'bg-green-500/10 border-green-500/30 text-green-400'
+                                  : 'bg-red-500/10 border-red-500/30 text-red-400'">
+        <span x-text="connTestResult ? '✓ Connected successfully' : '✗ Connection failed — check URL and API key'"></span>
+      </div>
+    </div>
+
+    <div class="px-6 py-4 border-t border-surface-border flex items-center gap-3 justify-end">
+      <button @click="testConnection()"
+              class="px-4 py-2 rounded-lg text-sm font-medium border border-surface-border
+                     hover:bg-surface-raised transition-colors">
+        Test Connection
+      </button>
+      <button @click="showSettings = false"
+              class="px-4 py-2 rounded-lg text-sm font-medium border border-surface-border
+                     hover:bg-surface-raised transition-colors">
+        Cancel
+      </button>
+      <button @click="saveSettings()"
+              class="px-4 py-2 rounded-lg text-sm font-medium
+                     bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+        Save
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- TOAST                                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div x-show="toast"
+     x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0 translate-y-2"
+     x-transition:enter-end="opacity-100 translate-y-0"
+     x-transition:leave="transition ease-in duration-150"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="fixed top-20 right-4 z-50 px-4 py-3 rounded-xl border shadow-xl text-sm font-medium max-w-sm"
+     :class="toast?.type === 'error'
+       ? 'bg-red-500/10 border-red-500/30 text-red-300'
+       : 'bg-green-500/10 border-green-500/30 text-green-300'">
+  <span x-text="toast?.message"></span>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- ALPINE.JS APP LOGIC                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<script>
+function app() {
+  return {
+    // ── Data ──────────────────────────────────────────────────────────────
+    albums:       [],
+    counts:       {},
+    selected:     new Set(),
+    statusFilter: 'all',
+    searchQuery:  '',
+
+    connected:    false,
+    scanning:     false,
+
+    // Progress (updated by SSE)
+    running:         false,
+    currentAlbumId:  null,
+    currentAlbumName: '',
+    albumProgress:   0,
+    albumTotal:      0,
+    batchProgress:   0,
+    batchTotal:      0,
+    batchStartMs:    null,
+
+    // Settings modal
+    showSettings:  false,
+    settings:      {},
+    connTestResult: null,
+
+    // Toast
+    toast: null,
+    _toastTimer: null,
+
+    // ── Status card definitions ────────────────────────────────────────────
+    statusCards: [
+      { key: 'all',         icon: '📚', label: 'Total'       },
+      { key: 'unsorted',    icon: '🆕', label: 'New'         },
+      { key: 'updated',     icon: '🔄', label: 'Updated'     },
+      { key: 'interrupted', icon: '⚠️', label: 'Interrupted' },
+      { key: 'sorted',      icon: '✅', label: 'Sorted'      },
+      { key: 'error',       icon: '❌', label: 'Error'       },
+    ],
+
+    // ── Computed ───────────────────────────────────────────────────────────
+    get albumPct() {
+      return this.albumTotal > 0
+        ? Math.round(this.albumProgress / this.albumTotal * 100)
+        : 0;
+    },
+    get batchPct() {
+      return this.batchTotal > 0
+        ? Math.round(this.batchProgress / this.batchTotal * 100)
+        : 0;
+    },
+    get batchEta() {
+      if (!this.batchStartMs || !this.batchProgress) return '--:--';
+      const elapsedS  = (Date.now() - this.batchStartMs) / 1000;
+      const rate      = this.batchProgress / elapsedS;
+      const remaining = (this.batchTotal - this.batchProgress) / rate;
+      return this.fmtDuration(remaining);
+    },
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+    async init() {
+      await this.checkConnection();
+      await this.loadAlbums();
+      await this.loadCounts();
+
+      // Auto-scan on first run (no albums in DB yet)
+      const totalAlbums = Object.values(this.counts).reduce((a, b) => a + b, 0);
+      if (totalAlbums === 0) await this.scan();
+
+      this.connectSSE();
+    },
+
+    // ── API helpers ────────────────────────────────────────────────────────
+    async checkConnection() {
+      try {
+        const r  = await fetch('/api/test-connection');
+        const d  = await r.json();
+        this.connected = d.connected;
+      } catch { this.connected = false; }
+    },
+
+    async loadAlbums() {
+      const p = new URLSearchParams();
+      if (this.statusFilter && this.statusFilter !== 'all') p.set('status', this.statusFilter);
+      if (this.searchQuery) p.set('search', this.searchQuery);
+      const r = await fetch('/api/albums?' + p);
+      this.albums = await r.json();
+      // Re-sync selection to only selected IDs that still exist
+      const ids = new Set(this.albums.map(a => a.id));
+      this.selected = new Set([...this.selected].filter(id => ids.has(id)));
+    },
+
+    async loadCounts() {
+      const r   = await fetch('/api/albums/counts');
+      const raw = await r.json();
+      // Compute 'all' total
+      const total = Object.values(raw).reduce((s, n) => s + n, 0);
+      this.counts = { all: total, ...raw };
+    },
+
+    async scan() {
+      this.scanning = true;
+      try {
+        const r = await fetch('/api/scan', { method: 'POST' });
+        const d = await r.json();
+        if (d.error) throw new Error(d.error);
+        await this.loadAlbums();
+        await this.loadCounts();
+        await this.checkConnection();
+        this.showToast(`Scan complete · ${d.total} albums · ${d.added} new · ${d.deleted} removed`, 'success');
+      } catch (e) {
+        this.showToast('Scan failed: ' + e.message, 'error');
+      } finally {
+        this.scanning = false;
+      }
+    },
+
+    async sortOne(albumId) {
+      await this._sortRequest({ album_ids: [albumId] });
+    },
+
+    async sortByStatus(statuses) {
+      await this._sortRequest({ status_filter: statuses });
+    },
+
+    async sortSelected() {
+      await this._sortRequest({ album_ids: [...this.selected] });
+    },
+
+    async _sortRequest(body) {
+      const r = await fetch('/api/sort', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        this.showToast(d.error, 'error');
+      } else {
+        this.showToast(`Sorting ${d.queued} album${d.queued !== 1 ? 's' : ''}…`, 'success');
+      }
+    },
+
+    async cancel() {
+      await fetch('/api/cancel', { method: 'POST' });
+    },
+
+    // ── SSE ────────────────────────────────────────────────────────────────
+    connectSSE() {
+      const es = new EventSource('/api/stream');
+
+      es.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        if (!data || !Object.keys(data).length) return;
+
+        if (data.running !== undefined)        this.running          = data.running;
+        if (data.album_id !== undefined)       this.currentAlbumId   = data.album_id;
+        if (data.album_name !== undefined)     this.currentAlbumName = data.album_name;
+        if (data.album_progress !== undefined) this.albumProgress    = data.album_progress;
+        if (data.album_total !== undefined)    this.albumTotal       = data.album_total;
+        if (data.batch_progress !== undefined) this.batchProgress    = data.batch_progress;
+        if (data.batch_total !== undefined)    this.batchTotal       = data.batch_total;
+        if (data.batch_start_ms !== undefined) this.batchStartMs     = data.batch_start_ms;
+
+        if (!data.running) {
+          this.batchStartMs = null;
+          this.loadCounts();
+        }
+        if (data.refresh) {
+          this.loadAlbums();
+          this.loadCounts();
+        }
+      };
+
+      es.onerror = () => {
+        // Reconnect after 5 s on error
+        es.close();
+        setTimeout(() => this.connectSSE(), 5000);
+      };
+    },
+
+    // ── Settings ───────────────────────────────────────────────────────────
+    async openSettings() {
+      const r = await fetch('/api/settings');
+      this.settings = await r.json();
+      this.settings.api_key_new = '';
+      this.connTestResult = null;
+      this.showSettings = true;
+    },
+
+    async saveSettings() {
+      const payload = { ...this.settings };
+      // Submit the new key value (if entered) under the real key name
+      if (payload.api_key_new) {
+        payload.api_key = payload.api_key_new;
+      }
+      delete payload.api_key_new;
+      delete payload.api_key_set;
+
+      await fetch('/api/settings', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+      this.showSettings = false;
+      this.showToast('Settings saved', 'success');
+      await this.checkConnection();
+    },
+
+    async testConnection() {
+      // Save current URL + key first so the test uses the new values
+      const payload = { ...this.settings };
+      if (payload.api_key_new) payload.api_key = payload.api_key_new;
+      delete payload.api_key_new;
+      delete payload.api_key_set;
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const r = await fetch('/api/test-connection');
+      const d = await r.json();
+      this.connTestResult = d.connected;
+      this.connected = d.connected;
+      setTimeout(() => this.connTestResult = null, 5000);
+    },
+
+    // ── Selection ──────────────────────────────────────────────────────────
+    toggleSelect(id, checked) {
+      if (checked) this.selected.add(id);
+      else         this.selected.delete(id);
+      this.selected = new Set(this.selected); // trigger Alpine reactivity
+    },
+
+    toggleAll(checked) {
+      this.selected = checked
+        ? new Set(this.albums.map(a => a.id))
+        : new Set();
+    },
+
+    // ── Filters ────────────────────────────────────────────────────────────
+    setFilter(key) {
+      this.statusFilter = key;
+      this.loadAlbums();
+    },
+
+    // ── Formatting helpers ─────────────────────────────────────────────────
+    badge(status) {
+      const map = {
+        unsorted:    { icon: '🆕', label: 'New',         cls: 'bg-blue-500/15 border-blue-500/30 text-blue-300'   },
+        sorted:      { icon: '✅', label: 'Sorted',      cls: 'bg-green-500/15 border-green-500/30 text-green-300' },
+        updated:     { icon: '🔄', label: 'Updated',     cls: 'bg-orange-500/15 border-orange-500/30 text-orange-300' },
+        interrupted: { icon: '⚠️', label: 'Interrupted', cls: 'bg-yellow-500/15 border-yellow-500/30 text-yellow-300' },
+        sorting:     { icon: '⏳', label: 'Sorting…',    cls: 'bg-indigo-500/15 border-indigo-500/30 text-indigo-300 animate-pulse' },
+        empty:       { icon: '📭', label: 'Empty',       cls: 'bg-slate-500/15 border-slate-500/30 text-slate-400' },
+        error:       { icon: '❌', label: 'Error',       cls: 'bg-red-500/15 border-red-500/30 text-red-300' },
+      };
+      return map[status] ?? map.unsorted;
+    },
+
+    modeLabel(mode, intervalS) {
+      if (!mode) return '';
+      const labels = { auto: 'Auto range', manual: 'Fixed base', fallback: 'Fallback', auto_narrow: 'Auto (1s)' };
+      const base = labels[mode] ?? mode;
+      if (intervalS && intervalS >= 1) {
+        const pretty = intervalS >= 3600
+          ? (intervalS / 3600).toFixed(1) + 'h'
+          : intervalS >= 60
+            ? (intervalS / 60).toFixed(1) + 'm'
+            : intervalS.toFixed(1) + 's';
+        return `${base} · ${pretty}/asset`;
+      }
+      return base;
+    },
+
+    formatDate(iso) {
+      if (!iso) return '—';
+      try {
+        return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      } catch { return iso; }
+    },
+
+    fmtDuration(secs) {
+      if (!isFinite(secs) || secs < 0) return '--:--';
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    },
+
+    // ── Toast ──────────────────────────────────────────────────────────────
+    showToast(message, type = 'success') {
+      clearTimeout(this._toastTimer);
+      this.toast = { message, type };
+      this._toastTimer = setTimeout(() => this.toast = null, 4000);
+    },
+  };
+}
+</script>
+
+</body>
+</html>
