@@ -67,6 +67,12 @@
                    bg-slate-700 hover:bg-slate-600 border border-surface-border transition-colors">
       ⚙ Settings
     </button>
+
+    <button @click="logout()"
+            class="px-3 py-1.5 rounded-lg text-sm font-medium border border-surface-border
+                   bg-slate-700 hover:bg-slate-600 transition-colors">
+      Sign out
+    </button>
   </div>
 </header>
 
@@ -533,6 +539,14 @@ function app() {
     },
 
     // ── API helpers ────────────────────────────────────────────────────────
+    async logout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } finally {
+        window.location.assign('/api/auth/login');
+      }
+    },
+
     async checkConnection() {
       try {
         const r  = await fetch('/api/test-connection');
