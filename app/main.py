@@ -19,9 +19,16 @@ Routes:
 import asyncio
 import json
 import os
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
+
+from auth import (
+    AUTH_DISABLED, OIDC_CONFIGURED, OIDC_REDIRECT_URI, OIDC_ALLOWED_EMAILS,
+    SESSION_SECRET, oauth, AuthenticationMiddleware,
+)
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -37,7 +44,78 @@ from sorter import job_manager
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Immich Sequencer", version="1.0.0")
+app = FastAPI(title="Immich Sequencer", version="1.1.0")
+
+# SessionMiddleware wraps authentication so request.session is available.
+app.add_middleware(AuthenticationMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET or "local-development-only-change-this",
+    same_site="lax",
+    https_only=os.getenv("SESSION_COOKIE_SECURE", "true").lower() in {"1", "true", "yes"},
+    max_age=12 * 60 * 60,
+)
+
+
+@app.get("/api/auth/login")
+async def auth_login(request: Request):
+    if AUTH_DISABLED:
+        return RedirectResponse("/", status_code=303)
+    if not OIDC_CONFIGURED:
+        raise HTTPException(status_code=503, detail="OIDC is not configured.")
+    redirect_uri = OIDC_REDIRECT_URI or str(request.url_for("auth_callback"))
+    return await oauth.immich_oidc.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/api/auth/callback", name="auth_callback")
+async def auth_callback(request: Request):
+    if not OIDC_CONFIGURED:
+        raise HTTPException(status_code=503, detail="OIDC is not configured.")
+    try:
+        token = await oauth.immich_oidc.authorize_access_token(request)
+        user = token.get("userinfo") or {}
+        if not user:
+            user = await oauth.immich_oidc.parse_id_token(request, token)
+        email = str(user.get("email", "")).strip().lower()
+        if OIDC_ALLOWED_EMAILS and email not in OIDC_ALLOWED_EMAILS:
+            request.session.clear()
+            raise HTTPException(status_code=403, detail="Your account is not allowed to access this application.")
+        if not user.get("sub"):
+            raise ValueError("Missing subject claim")
+        request.session.clear()
+        request.session["user"] = {
+            "sub": str(user["sub"]),
+            "email": email,
+            "name": str(user.get("name") or user.get("preferred_username") or email or "User"),
+        }
+        return RedirectResponse("/", status_code=303)
+    except HTTPException:
+        raise
+    except Exception:
+        request.session.clear()
+        raise HTTPException(status_code=401, detail="OIDC sign-in failed. Check provider and callback configuration.")
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    return {"authenticated": bool(request.session.get("user")), "user": request.session.get("user")}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    request.session.clear()
+    return {"status": "signed_out"}
+
+
+def validate_immich_url(value: str) -> str:
+    parts = urlsplit(str(value).strip())
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise HTTPException(status_code=400, detail="Immich URL must be an absolute HTTP(S) URL.")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise HTTPException(status_code=400, detail="Immich URL cannot contain credentials, query parameters, or fragments.")
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+
+
 
 
 @app.on_event("startup")
@@ -219,6 +297,14 @@ async def sort_albums(request: Request):
 # Status + SSE
 # ---------------------------------------------------------------------------
 
+@app.post("/api/cancel")
+async def cancel_sort():
+    if not job_manager.is_running():
+        return JSONResponse({"error": "No sort job is running."}, status_code=409)
+    job_manager.cancel()
+    return {"status": "cancellation_requested"}
+
+
 @app.get("/api/status")
 async def get_status():
     return {**job_manager.status, "running": job_manager.is_running()}
@@ -259,24 +345,38 @@ async def sse_stream(request: Request):
 
 @app.get("/api/settings")
 async def read_settings():
-    s = get_settings()
-    # Mask the API key after the first 4 characters
-    key = s.get("api_key", "")
-    if len(key) > 4:
-        s["api_key"] = key[:4] + "•" * 8
-        s["api_key_set"] = True
-    else:
-        s["api_key_set"] = bool(key)
-    return s
+    settings = get_settings()
+    settings["api_key_set"] = bool(settings.get("api_key"))
+    settings["api_key"] = ""
+    return settings
 
 
 @app.put("/api/settings")
 async def write_settings(request: Request):
-    body = await request.json()
-    # Don't overwrite the stored key with the masked preview
-    if body.get("api_key", "").endswith("•" * 8):
-        body.pop("api_key", None)
-    save_settings(body)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON request body.")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Settings must be a JSON object.")
+    allowed = {"immich_url", "api_key", "min_year", "request_delay", "album_delay", "max_retries", "http_method", "base_time_override"}
+    updates = {key: value for key, value in body.items() if key in allowed}
+    if "immich_url" in updates:
+        updates["immich_url"] = validate_immich_url(updates["immich_url"])
+    if "api_key" in updates and not str(updates["api_key"]).strip():
+        updates.pop("api_key")
+    for key, low, high in (("min_year", 1970, 2030), ("request_delay", 0, 5), ("album_delay", 0, 60), ("max_retries", 1, 10)):
+        if key in updates:
+            try:
+                number = float(updates[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} must be numeric.")
+            if not low <= number <= high or (key in {"min_year", "max_retries"} and not number.is_integer()):
+                raise HTTPException(status_code=400, detail=f"{key} must be between {low} and {high}.")
+            updates[key] = str(int(number) if number.is_integer() else number)
+    if "http_method" in updates and updates["http_method"] not in {"PUT", "PATCH"}:
+        raise HTTPException(status_code=400, detail="http_method must be PUT or PATCH.")
+    save_settings(updates)
     return {"status": "ok"}
 
 
@@ -294,6 +394,7 @@ async def test_connection():
 
 @app.get("/api/history")
 async def sort_history(limit: int = 50):
+    limit = max(1, min(int(limit), 500))
     with get_db() as conn:
         rows = conn.execute(
             "SELECT * FROM sort_log ORDER BY started_at DESC LIMIT ?", (limit,)
