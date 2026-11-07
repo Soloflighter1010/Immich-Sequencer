@@ -9,6 +9,6 @@ services:
     environment:
       # These seed the settings DB on first run only.
       # After that, use the Settings UI to change them.
-      - IMMICH_URL=https://photos.soloflighter.me
-      - API_KEY=JTsqPDUbu32PZgDEKmqdRmjJ9uJaSAxHNyJObb4Tw
+      - IMMICH_URL=
+      - API_KEY=
     restart: unless-stopped
