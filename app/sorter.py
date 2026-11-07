@@ -123,6 +123,26 @@ class JobManager:
         self.bus.emit(update)
 
     def _worker(self, album_ids: list[str], settings: dict) -> None:
+        """Run the worker with a recovery path for unexpected exceptions."""
+        try:
+            self._run_worker(album_ids, settings)
+        except Exception as exc:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE albums SET status = 'interrupted', error_message = ? WHERE status = 'sorting'",
+                    (f"Worker crashed: {exc}"[:1000],),
+                )
+                conn.execute(
+                    "UPDATE sort_log SET completed_at = ?, status = 'failed' WHERE status = 'running'",
+                    (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),),
+                )
+                conn.commit()
+            self._emit({
+                "running": False, "album_id": None, "album_name": "",
+                "message": f"Sort worker failed: {exc}", "refresh": True,
+            })
+
+    def _run_worker(self, album_ids: list[str], settings: dict) -> None:
         """Main worker — iterates album list in the background thread."""
         total      = len(album_ids)
         log_id     = start_sort_log(total)
@@ -172,7 +192,7 @@ class JobManager:
         cancelled = self._cancel.is_set()
         finish_sort_log(
             log_id,
-            status="cancelled" if cancelled else "completed",
+            status="cancelled" if cancelled else ("failed" if failed_n else "completed"),
             sorted_n=sorted_n,
             failed_n=failed_n,
             skipped_n=skipped_n,
@@ -294,6 +314,8 @@ class JobManager:
             final_status = "interrupted"
         elif success_count == 0:
             final_status = "error"
+        elif failed_count > 0:
+            final_status = "error"
         else:
             final_status = "sorted"
 
@@ -309,7 +331,10 @@ class JobManager:
             sort_progress=success_count,
             sort_total=n,
             asset_count=n,
-            error_message="" if final_status != "error" else "All asset updates failed",
+            error_message=(
+                "" if final_status != "error"
+                else f"{failed_count} of {n} asset updates failed"
+            ),
         )
 
         return "sorted" if final_status == "sorted" else (

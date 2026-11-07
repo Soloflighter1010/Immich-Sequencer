@@ -33,7 +33,7 @@ def build_session(settings: dict) -> requests.Session:
 
 def check_auth(session: requests.Session, base_url: str) -> bool:
     try:
-        r = session.get(f"{base_url}/api/users/me", timeout=10)
+        r = session.get(f"{base_url}/api/users/me", timeout=10, allow_redirects=False)
         return r.status_code == 200
     except requests.RequestException:
         return False
@@ -44,7 +44,7 @@ def check_auth(session: requests.Session, base_url: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def get_all_albums(session: requests.Session, base_url: str) -> list[dict]:
-    r = session.get(f"{base_url}/api/albums", timeout=30)
+    r = session.get(f"{base_url}/api/albums", timeout=30, allow_redirects=False)
     r.raise_for_status()
     return r.json()
 
@@ -57,11 +57,14 @@ def get_album_assets(
     """Paginate through POST /api/search/metadata to collect all assets."""
     assets: list[dict] = []
     page = 1
-    while True:
+    seen_pages: set[int] = set()
+    while page not in seen_pages:
+        seen_pages.add(page)
         r = session.post(
             f"{base_url}/api/search/metadata",
-            json={"albumId": album_id, "page": page, "size": SEARCH_PAGE_SIZE},
+            json={"albumIds": [album_id], "page": page, "size": SEARCH_PAGE_SIZE},
             timeout=60,
+            allow_redirects=False,
         )
         r.raise_for_status()
         data      = r.json()
@@ -71,9 +74,12 @@ def get_album_assets(
         if not next_page:
             break
         try:
-            page = int(next_page)
+            next_page_number = int(next_page)
         except (ValueError, TypeError):
             break
+        if next_page_number <= page or next_page_number in seen_pages:
+            break
+        page = next_page_number
     return assets
 
 
@@ -88,7 +94,7 @@ def update_asset(
     url = f"{base_url}/api/assets/{asset_id}"
     for attempt in range(max_retries):
         try:
-            r = method(url, json={"dateTimeOriginal": timestamp}, timeout=15)
+            r = method(url, json={"dateTimeOriginal": timestamp}, timeout=15, allow_redirects=False)
             if r.ok:
                 return True
             if 400 <= r.status_code < 500:

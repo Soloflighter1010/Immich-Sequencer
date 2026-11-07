@@ -5,10 +5,18 @@ services:
     ports:
       - "57154:8080"
     volumes:
-      - /media/Sea1/AppData/immichSort:/data           # SQLite database + logs
+      - /media/Sea1/AppData/immichSort:/data
     environment:
-      # These seed the settings DB on first run only.
-      # After that, use the Settings UI to change them.
-      - IMMICH_URL=
-      - API_KEY=
+      # Immich connection.
+      - IMMICH_URL=${IMMICH_URL:-http://immich-server:2283}
+      - API_KEY=${API_KEY}
+      # OIDC provider (Pocket ID or another standards-compliant provider).
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI}
+      - OIDC_ALLOWED_EMAILS=${OIDC_ALLOWED_EMAILS:-}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
+      - AUTH_DISABLED=false
     restart: unless-stopped
