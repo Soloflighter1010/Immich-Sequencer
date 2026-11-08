@@ -59,9 +59,6 @@ CREATE TABLE IF NOT EXISTS albums (
     error_message   TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_albums_status ON albums(status);
-CREATE INDEX IF NOT EXISTS idx_albums_name   ON albums(name COLLATE NOCASE);
-
 CREATE TABLE IF NOT EXISTS sort_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at     TEXT NOT NULL,
@@ -86,10 +83,58 @@ DEFAULT_SETTINGS = {
 }
 
 
+# Additive migrations for databases created by older releases. Every
+# definition is safe for ALTER TABLE ... ADD COLUMN and gives existing rows
+# a usable default where one is required.
+ALBUM_MIGRATIONS = {
+    "name": "TEXT NOT NULL DEFAULT ''",
+    "asset_count": "INTEGER NOT NULL DEFAULT 0",
+    "status": "TEXT NOT NULL DEFAULT 'unsorted'",
+    "order_hash": "TEXT",
+    "last_sorted_at": "TEXT",
+    "last_scanned_at": "TEXT",
+    "assets_updated": "INTEGER NOT NULL DEFAULT 0",
+    "assets_failed": "INTEGER NOT NULL DEFAULT 0",
+    "mode": "TEXT",
+    "base_time_used": "TEXT",
+    "interval_s": "REAL",
+    "sort_progress": "INTEGER NOT NULL DEFAULT 0",
+    "sort_total": "INTEGER NOT NULL DEFAULT 0",
+    "error_message": "TEXT",
+}
+
+SORT_LOG_MIGRATIONS = {
+    "started_at": "TEXT NOT NULL DEFAULT ''",
+    "completed_at": "TEXT",
+    "status": "TEXT NOT NULL DEFAULT 'running'",
+    "total_albums": "INTEGER NOT NULL DEFAULT 0",
+    "sorted_albums": "INTEGER NOT NULL DEFAULT 0",
+    "failed_albums": "INTEGER NOT NULL DEFAULT 0",
+    "skipped_albums": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """Apply non-destructive, repeatable column additions to an existing table."""
+    existing = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if not existing:
+        return
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 def init_db() -> None:
-    """Create schema and seed default settings (first run only)."""
+    """Create the schema, migrate older databases in place, and seed settings."""
     with get_db() as conn:
         conn.executescript(SCHEMA)
+        _add_missing_columns(conn, "albums", ALBUM_MIGRATIONS)
+        _add_missing_columns(conn, "sort_log", SORT_LOG_MIGRATIONS)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_status ON albums(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_name ON albums(name COLLATE NOCASE)")
         for key, factory in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
